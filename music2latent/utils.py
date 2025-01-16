@@ -4,6 +4,7 @@ from huggingface_hub import hf_hub_download
 import torch
 
 from .hparams import *
+device_type = 'cuda' if torch.cuda.is_available else 'mps' if torch.mps.is_available else 'cpu'
 
 # Get scaling coefficients c_skip, c_out, c_in based on noise sigma
 # These are used to scale the input and output of the consistency model, while satisfying the boundary condition for consistency models
@@ -70,7 +71,7 @@ def reverse_step(x, noise, sigma):
 def denoise(model, noisy_samples, sigma, latents=None):
     # Denoise samples
     with torch.no_grad():
-        with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=mixed_precision):
+        with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=mixed_precision):
             if latents is not None:
                 pred_samples = model(latents, noisy_samples, sigma)
             else:
