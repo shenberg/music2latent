@@ -7,7 +7,7 @@ from .hparams_inference import *
 from .utils import *
 from .models import *
 from .audio import *
-
+device_type = 'cuda' if torch.cuda.is_available else 'mps' if torch.mps.is_available else 'cpu'
 
 class EncoderDecoder:
     def __init__(self, load_path_inference=None, device=None):
@@ -137,12 +137,12 @@ def encode_audio_inference(audio_path, trainer, max_waveform_length_encode, max_
         repr_encoder_ls = torch.split(repr_encoder, max_batch_size, dim=0)
         latent_ls = []
         for i in range(len(repr_encoder_ls)):
-            with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=mixed_precision): # disable float16 for encoding (can cause nans)
+            with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=mixed_precision): # disable float16 for encoding (can cause nans)
                 latent = trainer.gen.encoder(repr_encoder_ls[i], extract_features=extract_features)
             latent_ls.append(latent)
         latent = torch.cat(latent_ls, dim=0)
     else:
-        with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=mixed_precision): # disable float16 for encoding (can cause nans)
+        with torch.autocast(device_type=device_type, dtype=torch.float16, enabled=mixed_precision): # disable float16 for encoding (can cause nans)
             latent = trainer.gen.encoder(repr_encoder, extract_features=extract_features)
     # split samples
     if latent.shape[0]>1:
