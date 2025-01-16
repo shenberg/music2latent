@@ -508,7 +508,7 @@ class UNet(nn.Module):
         inp = x
         
         # CONDITIONING
-        sigma = torch.ones((x.shape[0],), dtype=torch.float32).to(x.device)*sigma
+        sigma = torch.ones((x.shape[0],), dtype=x.dtype, device=x.device)*sigma
         sigma_log = torch.log(sigma)/4.
         emb_sigma_log = self.emb(sigma_log)
         time_emb = self.emb_proj(emb_sigma_log)
