@@ -102,23 +102,8 @@ class ConsistencyAE(pl.LightningModule):
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
 
-
-    def step_generic(self, batch, batch_idx):
-        # to match the paper syntax
-        x0 = batch
-
-        # TODO: move to hparams
-        # total iterations also taken from paper
-        # taken from section 4.4 implementation details of music2latent
-        delta_t0 = 0.1
-        # maximum step exponent
-        ek = 3
-
-        # eq. (13) section 4.3
-        dt = math.pow(delta_t0, (self.trainer.global_step / self.total_steps) * (ek - 1) + 1)
-        
-        self.log('dt', dt)
-
+    @torch.compile
+    def step_core(self, x0, dt):
         t_plus_1 = torch.rand(x0.shape[0], device=x0.device, dtype=x0.dtype)*(1-dt) + dt
         t = torch.clamp(t_plus_1 - dt, min=0.)
         sigma_plus_1 = utils.get_sigma_continuous(t_plus_1)
@@ -133,17 +118,36 @@ class ConsistencyAE(pl.LightningModule):
         y0 = self.model.decoder(latents)
 
         denoised_t_plus_1 = self.model(latents, x_t_plus_1, sigma_plus_1, pyramid_latents=y0)
-        # "Teacher" output, to correspond to f_theta_minus
+        # "Teacher" output, to correspond to f_theta_minus in eq. (11)
         with torch.no_grad():
             x_t = utils.add_noise(x0, initial_noise, sigma)
             denoised_t = self.model(latents, x_t, sigma, pyramid_latents=y0)
 
         # TODO: log denoised_t_plus_1
 
-        # eq. (12)
+        # lambda in eq. (12)
         loss_scale = 1 / (sigma_plus_1 - sigma)
 
+        # eq. (11), d(,) in paper is pseudo_huber()
         loss = (loss_scale * pseudo_huber(denoised_t_plus_1, denoised_t)).mean()
+        return loss
+
+
+    def step_generic(self, batch, batch_idx):
+
+        # TODO: move to hparams
+        # total iterations also taken from paper
+        # taken from section 4.4 implementation details of music2latent
+        delta_t0 = 0.1
+        # maximum step exponent
+        ek = 3
+
+        # eq. (13) section 4.3
+        dt = math.pow(delta_t0, (self.trainer.global_step / self.total_steps) * (ek - 1) + 1)
+
+        self.log('dt', dt, rank_zero_only=True)
+
+        loss = self.step_core(batch, dt)
 
         # print(f"sigma: {sigma}")
         # print(f"sigma_plus_1: {sigma_plus_1}")
