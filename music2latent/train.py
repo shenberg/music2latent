@@ -102,7 +102,7 @@ class ConsistencyAE(pl.LightningModule):
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
 
-    @torch.compile
+
     def step_core(self, x0, dt):
         t_plus_1 = torch.rand(x0.shape[0], device=x0.device, dtype=x0.dtype)*(1-dt) + dt
         t = torch.clamp(t_plus_1 - dt, min=0.)
