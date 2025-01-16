@@ -24,21 +24,22 @@ def pseudo_huber(x, y):
     y = y.view(y.shape[0], -1)
 
     c = pseudo_huber_constant(x.shape[1])
-    mse = F.mse_loss(x, y, reduction='none').sum(dim=-1)
 
-    loss = (mse + c*c).sqrt() - c
+    loss = F.huber_loss(x,y,reduction='none',delta=c).mean(dim=-1)
     return loss
 
 
 from pathlib import Path
 import soundfile as sf
 
-fma_path = Path('/Users/shenberg/Documents/work/whitebalance/music_detection/fma/fma_large')
+fma_path = Path('/data/fma/fma_large')
 phi_minus_1 = (1+(5**0.5))/2 - 1
 
 def get_train_val_datasets():
+    with open('fma_good_files.txt') as f:
+        good_files = f.read().strip().split('\n')
     # TODO: split by artist via metadata
-    files = sorted(fma_path.glob('*/*mp3'))
+    files = sorted(good_files)
     files = np.random.permutation(files)
     # TODO: hparam
     train_proportion = 0.9
@@ -62,13 +63,19 @@ class FileRandomDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         audio_path = self.files[index]
-        audio_data, sr = sf.read(audio_path, dtype='float32', always_2d=True)
+        try:
+            audio_data, sr = sf.read(audio_path, dtype='float32', always_2d=True)
+        except sf.LibsndfileError as e:
+            print(f"failed to load {index}: {self.files[index]}")
         # TODO: deal with stereo, right now averaging channels
         audio_data = audio_data.transpose([1,0]).mean(0, keepdims=True)
+        if np.any(np.isnan(audio_data)):
+            raise ValueError(f"{audio_path}: got NaN")
         audio_data = torch.from_numpy(audio_data)
         # lazy init so we generate relative_offsets separately in each worker
         if self.relative_offsets is None:
             self.relative_offsets = torch.rand(len(self.files))
+
         offset = int(self.relative_offsets[index]*(audio_data.shape[-1] - self.slice_size))
         self.relative_offsets[index] = (self.relative_offsets[index] + phi_minus_1) % 1
         audio_slice = audio_data[..., offset : offset + self.slice_size]
@@ -108,18 +115,17 @@ class ConsistencyAE(pl.LightningModule):
         ek = 3
 
         # eq. (13) section 4.3
-        dt = math.pow(delta_t0, (self.current_training_step / self.total_steps) * (ek - 1) + 1)
+        dt = math.pow(delta_t0, (self.trainer.global_step / self.total_steps) * (ek - 1) + 1)
         
         self.log('dt', dt)
 
-        t_plus_1 = torch.rand(x0.shape[0], device=x0.device)
-        t = torch.clamp(t_plus_1 - dt, min=0)
+        t_plus_1 = torch.rand(x0.shape[0], device=x0.device, dtype=x0.dtype)*(1-dt) + dt
+        t = torch.clamp(t_plus_1 - dt, min=0.)
         sigma_plus_1 = utils.get_sigma_continuous(t_plus_1)
         sigma = utils.get_sigma_continuous(t)
 
         initial_noise = torch.randn_like(x0)
 
-        x_t = utils.add_noise(x0, initial_noise, sigma)
         x_t_plus_1 = utils.add_noise(x0, initial_noise, sigma_plus_1)
 
         # eq. (10) in the paper
@@ -127,8 +133,10 @@ class ConsistencyAE(pl.LightningModule):
         y0 = self.model.decoder(latents)
 
         denoised_t_plus_1 = self.model(latents, x_t_plus_1, sigma_plus_1, pyramid_latents=y0)
-        # note detach(), to correspond to f_theta_minus ("teacher" output)
-        denoised_t = self.model(latents, x_t, sigma, pyramid_latents=y0).detach()
+        # "Teacher" output, to correspond to f_theta_minus
+        with torch.no_grad():
+            x_t = utils.add_noise(x0, initial_noise, sigma)
+            denoised_t = self.model(latents, x_t, sigma, pyramid_latents=y0)
 
         # TODO: log denoised_t_plus_1
 
@@ -137,18 +145,22 @@ class ConsistencyAE(pl.LightningModule):
 
         loss = (loss_scale * pseudo_huber(denoised_t_plus_1, denoised_t)).mean()
 
-        # TODO: deal with gradient accumulation - step should be incremented every optimizer step and not every
-        #       call to this function
-        self.current_training_step += 1
+        # print(f"sigma: {sigma}")
+        # print(f"sigma_plus_1: {sigma_plus_1}")
+        # print(f"{loss_scale =}")
 
+        # print(loss)
+        self.log('loss',loss, prog_bar=True, sync_dist=True)
         return loss
 
 
     def validation_step(self, batch, batch_idx):
+        # with torch.autocast(device_type="mps"):
         return self.step_generic(batch, batch_idx)
 
 
     def training_step(self, batch, batch_idx):
+        # with torch.autocast(device_type="mps"):
         return self.step_generic(batch, batch_idx)
 
 
@@ -171,8 +183,9 @@ class ConsistencyAE(pl.LightningModule):
 
 
 def main():
-    device = 'mps'
+    device = 'cuda' if torch.cuda.is_available else 'mps' if torch.mps.is_available else 'cpu'
     # TODO: utils somewhere
+    # seed all processes with the same seed to ensure the same train/val split
     pl.seed_everything(42, workers=True)
 
     consistency_model = ConsistencyAE()
@@ -181,7 +194,7 @@ def main():
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         # TODO: hparam
-        batch_size=16,
+        batch_size=8,
         shuffle=True,
         num_workers=4,
         drop_last=True,
@@ -202,7 +215,11 @@ def main():
         logger=True,
         # TODO: make hparam or argument or both
         max_steps=800000,
+        # precision=16,
+        strategy='ddp_find_unused_parameters_true',
         )
+    # re-seed for training process so each process gets a different seed
+    pl.seed_everything(42 + trainer.global_rank)
     trainer.fit(consistency_model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 
