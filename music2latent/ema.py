@@ -68,7 +68,7 @@ class EMA(Callback):
     def on_train_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
         rank_zero_info("Creating EMA weights copy.")
         if self._ema_model_weights is None:
-            self._ema_model_weights = [p.detach().clone() for p in pl_module.denoising_module.state_dict().values()]
+            self._ema_model_weights = [p.detach().clone() for p in pl_module.model.state_dict().values()]
         # ensure that all the weights are on the correct device
         self._ema_model_weights = [p.to(pl_module.device) for p in self._ema_model_weights]
         self._overflow_buf = torch.IntTensor([0]).to(pl_module.device)
@@ -79,7 +79,7 @@ class EMA(Callback):
         return self.apply_ema(pl_module)
 
     def apply_multi_tensor_ema(self, pl_module: "pl.LightningModule") -> None:
-        model_weights = list(pl_module.denoising_module.state_dict().values())
+        model_weights = list(pl_module.model.state_dict().values())
         amp_C.multi_tensor_axpby(
             65536,
             self._overflow_buf,
@@ -90,7 +90,7 @@ class EMA(Callback):
         )
 
     def apply_ema(self, pl_module: "pl.LightningModule") -> None:
-        for orig_weight, ema_weight in zip(list(pl_module.denoising_module.state_dict().values()),
+        for orig_weight, ema_weight in zip(list(pl_module.model.state_dict().values()),
                                            self._ema_model_weights):
             if ema_weight.data.dtype != torch.long and orig_weight.data.dtype != torch.long:
                 # ensure that non-trainable parameters (e.g., feature distributions) are not included in EMA weight averaging
@@ -148,14 +148,14 @@ class EMA(Callback):
                 )
 
     def replace_model_weights(self, pl_module: "pl.LightningModule") -> None:
-        self._weights_buffer = [p.detach().clone().to("cpu") for p in pl_module.denoising_module.state_dict().values()]
-        new_state_dict = {k: v for k, v in zip(pl_module.denoising_module.state_dict().keys(), self._ema_model_weights)}
-        pl_module.denoising_module.load_state_dict(new_state_dict)
+        self._weights_buffer = [p.detach().clone().to("cpu") for p in pl_module.model.state_dict().values()]
+        new_state_dict = {k: v for k, v in zip(pl_module.model.state_dict().keys(), self._ema_model_weights)}
+        pl_module.model.load_state_dict(new_state_dict)
 
     def restore_original_weights(self, pl_module: "pl.LightningModule") -> None:
-        state_dict = pl_module.denoising_module.state_dict()
+        state_dict = pl_module.model.state_dict()
         new_state_dict = {k: v for k, v in zip(state_dict.keys(), self._weights_buffer)}
-        pl_module.denoising_module.load_state_dict(new_state_dict)
+        pl_module.model.load_state_dict(new_state_dict)
         del self._weights_buffer
 
     @property
