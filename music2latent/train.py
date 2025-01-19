@@ -11,7 +11,7 @@ from . import hparams
 from . import utils
 from . import models
 from . import audio
-from .ema import EMAModelCheckpoint
+from .ema import EMAModelCheckpoint, EMA
 
 
 
@@ -215,18 +215,16 @@ def main():
         persistent_workers=True
     )
 
-    ema_callback = EMAModelCheckpoint(
-        decay=0.9999, # taken from section 4.4, TODO: move to hparams.py
-        apply_ema_every_n_steps=10,
-        filename='best-{epoch:02d}-{val_FID:.3f}',
+    ema_save_callback = EMAModelCheckpoint(
+        filename='best-{epoch:02d}-{val_loss:.3f}',
         save_on_train_epoch_end=True,
         every_n_train_steps=100000,
     )
 
-    regular_callback = ModelCheckpoint(
-        every_n_train_steps=100000,
+    ema_callback = EMA(
+        decay=0.999, # taken from section 4.4 and divided by 10 due to below TODO: move to hparams.py
+        apply_ema_every_n_steps=10,
     )
-
 
     trainer = pl.Trainer(
         accelerator=device,
@@ -235,7 +233,7 @@ def main():
         max_steps=800000,
         # precision=16,
         strategy='ddp_find_unused_parameters_true',
-        callbacks=[regular_callback, ema_callback]
+        callbacks=[ema_save_callback, ema_callback]
         )
     # re-seed for training process so each process gets a different seed
     pl.seed_everything(42 + trainer.global_rank)
