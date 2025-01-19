@@ -5,11 +5,13 @@ import torch.nn.functional as F
 import numpy as np
 import math
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 from . import hparams
 from . import utils
 from . import models
 from . import audio
+from .ema import EMAModelCheckpoint
 
 
 
@@ -213,6 +215,18 @@ def main():
         persistent_workers=True
     )
 
+    ema_callback = EMAModelCheckpoint(
+        decay=0.9999, # taken from section 4.4, TODO: move to hparams.py
+        apply_ema_every_n_steps=10,
+        filename='best-{epoch:02d}-{val_FID:.3f}',
+        save_on_train_epoch_end=True,
+        every_n_train_steps=100000,
+    )
+
+    regular_callback = ModelCheckpoint(
+        every_n_train_steps=100000,
+    )
+
 
     trainer = pl.Trainer(
         accelerator=device,
@@ -221,6 +235,7 @@ def main():
         max_steps=800000,
         # precision=16,
         strategy='ddp_find_unused_parameters_true',
+        callbacks=[regular_callback, ema_callback]
         )
     # re-seed for training process so each process gets a different seed
     pl.seed_everything(42 + trainer.global_rank)
